@@ -1,9 +1,45 @@
 from math import factorial
 
 import numpy as np
+import scipy
+from scipy import linalg
+
+from pyqumo.matrix import is_pmf, order_of, cached_method, cbdiag
 
 
-class Constant:
+def vectorize(
+        otypes=None, doc=None, excluded=None, cache=False, signature=None):
+    def wrapper(f):
+        return np.vectorize(f, otypes=otypes, doc=doc, excluded=excluded,
+                            cache=cache, signature=signature)
+    return wrapper
+
+
+class Distribution:
+    """Base class for all continuous distributions"""
+    def mean(self) -> float: raise NotImplementedError
+
+    def var(self) -> float: raise NotImplementedError
+
+    def std(self): return np.sqrt(self.var())
+
+    def moment(self, n: int) -> float: raise NotImplementedError
+
+    def generate(self, num): raise NotImplementedError
+
+    def pdf(self, x): raise NotImplementedError
+
+    def cdf(self, x): raise NotImplementedError
+
+    def __call__(self) -> float:
+        return self.generate(1)
+
+    def sample(self, shape):
+        size = np.prod(shape)
+        return np.asarray(list(self.generate(size))).reshape(shape)
+
+
+class Constant(Distribution):
     def __init__(self, value):
         self.__value = value
 
@@ -18,6 +54,12 @@ class Constant:
 
     def var(self):
         return 0
+
+    def pdf(self, x):
+        return np.inf if x == self.__value else 0
+
+    def cdf(self, x):
+        return 1 if x >= self.__value else 0
 
     def moment(self, k):
         if k <= 0 or np.abs(k - np.round(k)) > 0:
@@ -36,7 +78,7 @@ class Constant:
         return str(self)
 
 
-class Normal:
+class Normal(Distribution):
     def __init__(self, mean, std):
         self.__mean, self.__std = mean, std
 
@@ -48,6 +90,14 @@ class Normal:
 
     def var(self):
         return self.__std ** 2
+
+    def pdf(self, x):
+        return 1 / np.sqrt(2 * np.pi * self.var()) * np.exp(
+            -(x - self.mean()) ** 2 / (2 * self.var())
+        )
+
+    def cdf(self, x):
+        return 0.5 * (1 + np.math.erf((x - self.mean())/(self.std() * 2**0.5)))
 
     def moment(self, k):
         if k <= 0 or np.abs(k - np.round(k)) > 0:
@@ -320,16 +370,6 @@ class VarChoice:
         return str(self)
 
 
-class PhaseType:
-    def __init__(self, s, p):
-        pass  # TODO
-
-
-class MarkovProcess:
-    def __init__(self, d0, d1):
-        pass  # TODO
-
-
 class SemiMarkovAbsorb:
     MAX_ITER = 100000
 
@@ -394,3 +434,381 @@ class SemiMarkovAbsorb:
         if size is not None:
             return np.asarray([self() for _ in range(size)])
         return self()
+
+
+class Exp(Distribution):
+    """Exponential random distribution.
+
+    To create a distribution its parameter must be specified. The object is
+    immutable.
+    """
+
+    def __init__(self, rate):
+        super().__init__()
+        if rate <= 0.0:
+            raise ValueError("exponential parameter must be positive")
+        self._param = rate
+        self.__cache__ = {}
+
+    @property
+    def rate(self):
+        """Distribution parameter"""
+        return self._param
+
+    def mean(self):
+        return 1. / self._param
+
+    def var(self):
+        return 1. / (self._param ** 2)
+
+    def std(self):
+        return 1. / self._param
+
+    @staticmethod
+    @np.vectorize
+    def m(n, rate):
+        return np.math.factorial(n) / pow(rate, n)
+
+    @cached_method('moment', 1)
+    def moment(self, n):
+        return Exp.m(n, self.rate)
+
+    @staticmethod
+    @np.vectorize
+    def f(x, rate):
+        if rate <= 0:
+            raise ValueError("rate <= 0")
+        return rate * pow(np.e, -rate * x) if x >= 0 else 0.0
+
+    def pdf(self, x):
+        return self.f(x, self.rate)
+
+    # noinspection PyPep8Naming
+    @staticmethod
+    @np.vectorize
+    def F(x, rate):
+        if rate <= 0:
+            raise ValueError("rate <= 0")
+        return 1.0 - pow(np.e, -rate * x) if x >= 0 else 0.0
+
+    def cdf(self, x):
+        return self.F(x, self.rate)
+
+    def generate(self, num):
+        for i in range(num):
+            yield np.random.exponential(1 / self.rate)
+
+    def __str__(self):
+        return "exp({})".format(self.rate)
+
+
+class Erlang(Distribution):
+    """Erlang random distribution.
+
+    To create a distribution its shape (k) and rate (lambda) parameters must
+    be specified. Its density function is defined as:
+
+    f(x;k,\\lambda) = \\lambda^k x^(k-1) e^(-\\lambda * x) / (k-1)!
+    """
+
+    def __init__(self, shape, rate, tol=1e-08):
+        super().__init__()
+        if (shape <= tol or shape == np.inf or
+                np.abs(np.round(shape) - shape) > tol):
+            raise ValueError("shape must be natural integer")
+        if rate <= 0.0:
+            raise ValueError("rate <= 0")
+        self._shape, self._rate = int(np.round(shape)), rate
+        self.__cache__ = {}
+
+    @property
+    def shape(self):
+        return self._shape
+
+    @property
+    def rate(self):
+        return self._rate
+
+    @cached_method('mean')
+    def mean(self):
+        return self._shape / self._rate
+
+    @cached_method('var')
+    def var(self):
+        return self._shape / (self._rate ** 2)
+
+    @cached_method('std')
+    def std(self):
+        return self.var() ** 0.5
+
+    @staticmethod
+    @np.vectorize
+    def m(n, shape, rate):
+        factors = [i / rate for i in range(shape, shape + n)]
+        return np.prod(factors)
+
+    @cached_method('moment', 1)
+    def moment(self, n):
+        return Erlang.m(n, self.shape, self.rate)
+
+    @staticmethod
+    @np.vectorize
+    def f(x, shape, rate):
+        if rate < 0:
+            raise ValueError("rate < 0")
+        if shape < 1:
+            raise ValueError("shape < 1")
+        return (rate * pow(rate * x, shape - 1) * pow(np.e, -rate * x) /
+                np.math.factorial(shape - 1)) if 0 <= x < np.inf else 0.0
+
+    def pdf(self, x):
+        return Erlang.f(x, self.shape, self.rate)
+
+    # noinspection PyPep8Naming
+    @staticmethod
+    @np.vectorize
+    def F(x, shape, rate):
+        if rate < 0:
+            raise ValueError("rate < 0")
+        if shape < 1:
+            raise ValueError("shape < 1")
+        elif shape == 1:
+            return 1 - pow(np.e, -rate * x)
+        else:
+            return (Erlang.F(x, shape - 1, rate) -
+                    1 / rate * Erlang.f(x, shape, rate))
+
+    def cdf(self, x):
+        return Erlang.F(x, self.shape, self.rate)
+
+    def generate(self, num):
+        for i in range(num):
+            yield sum(np.random.exponential(1 / self.rate, size=self.shape))
+
+    def __str__(self):
+        return "Erlang(rate={}, shape={})".format(self.rate, self.shape)
+
+
+class HyperExp(Distribution):
+    """Hyper-exponential distribution.
+
+    Hyper-exponential distribution is defined by:
+
+    - a vector of rates (a1, ..., aN)
+    - probabilities mass function (p1, ..., pN)
+
+    Then the resulting probability is a weighted sum of exponential
+    distributions Exp(ai) with weights pi:
+
+    $X = \\sum_{i=1}^{N}{p_i X_i}$, where $X_i ~ Exp(ai)$
+    """
+
+    def __init__(self, rates, probs):
+        rates, probs = np.asarray(rates), np.asarray(probs)
+        if len(rates) != len(probs):
+            raise ValueError("rates and probs vectors order mismatch")
+        if not is_pmf(probs):
+            raise ValueError("probs must define a PMF")
+        # noinspection PyTypeChecker
+        if not (np.all(rates >= 0.0)):
+            raise ValueError("rates must be non-negative")
+        self._rates, self._pmf0 = rates, probs
+        self.__cache__ = {}
+
+    @property
+    def rates(self):
+        return self._rates
+
+    @property
+    def pmf0(self):
+        return self._pmf0
+
+    @cached_method('mean')
+    def mean(self):
+        return sum(self._pmf0 / self._rates)
+
+    @cached_method('var')
+    def var(self):
+        return sum(self._pmf0 / (self._rates ** 2))
+
+    @cached_method('std')
+    def std(self):
+        return np.sqrt(self.var())
+
+    @staticmethod
+    @vectorize(excluded={1, 2})
+    def m(n, rates, pmf0):
+        """Compute n-th moment of the hyperexponential distribution.
+
+        Notes:
+            this version doesn't support n vectors
+
+        Args:
+            n: integer scalar - moment index
+            rates: any iterable with positive floats
+            pmf0: initial probabilities
+
+        Returns: n-th moment value
+        """
+        return sum(np.math.factorial(n) * pmf0 / pow(rates, n))
+
+    @cached_method('moment', 1)
+    def moment(self, n):
+        return HyperExp.m(n, self.rates, self.pmf0)
+
+    @property
+    def order(self):
+        return len(self._rates)
+
+    def generate(self, size):
+        for i in range(size):
+            state = np.random.choice(self.order, 1, p=self._pmf0)
+            yield np.random.exponential(1. / self._rates[state])
+
+    @staticmethod
+    @vectorize(excluded={1, 2})
+    def f(x, rates, pmf0):
+        state = np.random.choice(len(pmf0), 1, p=pmf0)
+        return Exp.f(x, rates[state])
+
+    def pdf(self, x):
+        return self.f(x, self.rates, self.pmf0)
+
+    # noinspection PyPep8Naming
+    @staticmethod
+    @vectorize(excluded={1, 2})
+    def F(x, rates, pmf0):
+        state = np.random.choice(len(pmf0), 1, p=pmf0)
+        return Exp.F(x, rates[state])
+
+    def cdf(self, x):
+        return self.F(x, self.rates, self.pmf0)
+
+    def __str__(self):
+        return "HyperExp(rates={}, pmf0={})".format(self._rates, self._pmf0)
+
+
+class PhaseType(Distribution):
+    @staticmethod
+    def exponential(rate):
+        return PhaseType([[-rate]], [1.0])
+
+    @staticmethod
+    def erlang(shape, rate):
+        s = cbdiag(shape, ((0, [[-rate]]), (1, [[rate]])))
+        pmf0 = np.asarray((1.0,) + (0.0,) * (shape - 1))
+        return PhaseType(s, pmf0)
+
+    def __init__(self, subgenerator, pmf0):
+        self._subgenerator = np.asarray(subgenerator)
+        self._pmf0 = np.asarray(pmf0)
+        self.__cache__ = {}
+
+    @property
+    def order(self):
+        return order_of(self.S)
+
+    # noinspection PyPep8Naming
+    @property
+    def S(self):
+        return self._subgenerator
+
+    @property
+    def subgenerator(self):
+        return self.S
+
+    @property
+    def pmf0(self):
+        return self._pmf0
+
+    @property
+    @cached_method('sni')
+    def sni(self):
+        return -np.linalg.inv(self.S)
+
+    @property
+    def rate(self):
+        return 1 / self.mean()
+
+    @cached_method('mean')
+    def mean(self):
+        return self.moment(1)
+
+    @cached_method('var')
+    def var(self):
+        return self.moment(2) - self.mean() ** 2
+
+    @cached_method('moment', 1)
+    def moment(self, n):
+        sni_powered = np.linalg.matrix_power(self.sni, n)
+        ones = np.ones(shape=(self.order, 1))
+        x = np.math.factorial(n) * self.pmf0.dot(sni_powered).dot(ones)
+        return x.item()
+
+    def generate(self, num, max_hop_count=100):
+        # Building P - a transition probabilities matrix of size Nx(2N), where:
+        # - P(i, j), j < N, is a probability to move i -> j without arrival;
+        # - P(i, j), N <= j < 2N is a probability to move i -> (j - N) with
+        #   arrival
+        n = self.order
+        ones = np.ones(n).reshape((n, 1))
+        rcol = -self.subgenerator.dot(ones)
+        rates = -self.subgenerator.diagonal()
+        generator = np.hstack([self.subgenerator + np.diag(rates), rcol])
+        means = np.diag(np.power(rates, -1))
+        p = means.dot(generator)
+        assert isinstance(p, np.ndarray)
+        p_line = np.asarray([x if x > 1e-8 else 0 for x in p.flatten()])
+        p = p_line.reshape((n, n + 1))
+        pmf0 = self.pmf0.flatten()
+
+        # Yielding random intervals
+        for i in range(num):
+            arrival_interval = 0.0
+            hop_count = 0
+            state = np.random.choice(range(self.order), p=pmf0)
+            while (state < n and
+                   (max_hop_count is None or hop_count < max_hop_count)):
+                next_state = np.random.choice(range(n + 1), p=p[state])
+                arrival_interval += np.random.exponential(1 / rates[state])
+                hop_count += 1
+                state = next_state
+            if state == n:
+                yield arrival_interval
+            else:
+                raise ValueError("failed to get to absorbing state in {} hops"
+                                 "".format(hop_count))
+
+    @staticmethod
+    @vectorize(excluded={1, 2})
+    def f(x, subgenerator, pmf0):
+        pmf0 = np.asarray(pmf0)
+        ones = np.ones(shape=(order_of(subgenerator)))
+        s = np.asarray(subgenerator)
+        if 0 <= x < np.inf:
+            return pmf0.dot(linalg.expm(x * s)).dot(-s).dot(ones)
+        else:
+            return 0.0
+
+    def pdf(self, x):
+        return PhaseType.f(x, self.S, self.pmf0)
+
+    # noinspection PyPep8Naming
+    @staticmethod
+    @vectorize(excluded={1, 2})
+    def F(x, subgenerator, pmf0):
+        pmf0 = np.asarray(pmf0)
+        ones = np.ones(shape=(order_of(subgenerator)))
+        s = np.asarray(subgenerator)
+        if 0 <= x < np.inf:
+            return 1 - pmf0.dot(linalg.expm(x * s)).dot(ones)
+        elif x <= 0:
+            return 0
+        else:
+            return 1.0
+
+    def cdf(self, x):
+        return PhaseType.F(x, self.S, self.pmf0)
+
+    def __str__(self):
+        return "PH(S={}, pmf0={})".format(self.S.tolist(), self.pmf0.tolist())

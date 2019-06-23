@@ -67,14 +67,14 @@ def test_exponential_distribution(mean):
     # Generate enough items using call method, validate they have the expected
     # statistical properties:
     _values = np.asarray([dist() for _ in range(500)])
-    assert_allclose(_values.mean(), mean, rtol=0.15)
-    assert_allclose(_values.std(), mean, rtol=0.15)
+    assert_allclose(_values.mean(), mean, rtol=0.25)
+    assert_allclose(_values.std(), mean, rtol=0.25)
 
     # Check that we also have generate() method:
     _values = dist.generate(size=500)
     assert isinstance(_values, np.ndarray)
-    assert_allclose(_values.mean(), mean, rtol=0.15)
-    assert_allclose(_values.std(), mean, rtol=0.15)
+    assert_allclose(_values.mean(), mean, rtol=0.25)
+    assert_allclose(_values.std(), mean, rtol=0.25)
 
     # Finally, we make sure that str is implemented and contains value:
     assert str(mean) in str(dist)

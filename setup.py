@@ -24,7 +24,7 @@ setup(name='pyqumo',
       packages=['pyqumo'],
       scripts=[],
       install_requires=[
-          'numpy',
+          'numpy', 'scipy',
       ],
       dependency_links=[],
       include_package_data=True,
