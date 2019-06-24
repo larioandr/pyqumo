@@ -7,7 +7,7 @@ def readme():
 
 
 setup(name='pyqumo',
-      version='0.1.1',
+      version='0.1.2',
       description='Queueing Models in Python',
       long_description=readme(),
       classifiers=[
@@ -24,9 +24,11 @@ setup(name='pyqumo',
       packages=['pyqumo'],
       scripts=[],
       install_requires=[
-          'numpy', 'scipy',
+          'numpy', 'scipy', 'pydesim',
       ],
-      dependency_links=[],
+      dependency_links=[
+          'git+https://github.com/larioandr/pydesim.git#egg=pydesim',
+      ],
       include_package_data=True,
       zip_safe=False,
       setup_requires=["pytest-runner"],

@@ -32,7 +32,7 @@ class Distribution:
     def cdf(self, x): raise NotImplementedError
 
     def __call__(self) -> float:
-        return self.generate(1)
+        return next(self.generate(1))
 
     def sample(self, shape):
         size = np.prod(shape)
