@@ -1,6 +1,6 @@
-from collections import deque
+from collections import deque, namedtuple
 
-from pydesim import Model, Trace, Intervals, Statistic
+from pydesim import Model, Trace, Intervals, Statistic, simulate
 
 
 class Packet:
@@ -305,3 +305,38 @@ class Sink(Model):
         self.arrival_intervals.record(self.sim.stime)
         message.source.delays.append(self.sim.stime - message.created_at)
 
+
+#############################################################################
+# SHORTCUTS
+#############################################################################
+def tandem_queue_network(arrivals, services, queue_capacity, stime_limit):
+    assert len(arrivals) == len(services)
+    num_stations = len(arrivals)
+
+    sr = simulate(QueueingTandemNetwork, stime_limit=stime_limit, params={
+        'arrivals': arrivals,
+        'services': services,
+        'queue_capacity': queue_capacity,
+        'num_stations': num_stations,
+    })
+
+    simret_class = namedtuple('SimRet', ['nodes'])
+    node_class = namedtuple('Node', [
+        'delay', 'queue_size', 'system_size', 'busy', 'arrivals', 'departures',
+        'service',
+    ])
+
+    active_nodes = {i for i in range(num_stations) if arrivals[i] is not None}
+
+    nodes = [
+        node_class(
+            delay=(sr.data.sources[i].delays if i in active_nodes else None),
+            queue_size=sr.data.queues[i].size_trace,
+            system_size=sr.data.system_size_trace[i],
+            busy=sr.data.servers[i].busy_trace,
+            arrivals=sr.data.queues[i].arrival_intervals.statistic(),
+            departures=sr.data.servers[i].departure_intervals.statistic(),
+            service=sr.data.servers[i].service_intervals,
+        ) for i in range(num_stations)
+    ]
+    return simret_class(nodes=nodes)

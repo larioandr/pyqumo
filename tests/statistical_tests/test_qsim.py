@@ -1,10 +1,10 @@
-import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 from pydesim import simulate
 
 from pyqumo.distributions import Exponential, PhaseType
-from pyqumo.qsim import QueueingSystem, QueueingTandemNetwork
+from pyqumo.qsim import QueueingSystem, QueueingTandemNetwork, \
+    tandem_queue_network
 
 
 @pytest.mark.parametrize('arrival,service,stime_limit', [
@@ -122,7 +122,7 @@ def test_mm1_multihop_tandem_model_with_cross_traffic(
             expected_delays[i + 1] if i < n - 1 else 0
         )
 
-    assert_allclose(est_delays, expected_delays, rtol=0.25)
+    assert_allclose(est_delays, expected_delays, rtol=0.35)
 
 
 @pytest.mark.parametrize('arrival,service,stime_limit,num_stations', [
@@ -135,12 +135,9 @@ def test_mm1_multihop_tandem_model_without_cross_traffic(
     n = num_stations
 
     # noinspection PyTypeChecker
-    ret = simulate(QueueingTandemNetwork, stime_limit=stime_limit, params={
-        'arrivals': ([arrival] + [None] * (n - 1)),
-        'services': [service for _ in range(num_stations)],
-        'queue_capacity': None,
-        'num_stations': num_stations,
-    })
+    arrivals = [arrival] + [None] * (n - 1)
+    services = [service for _ in range(num_stations)]
+    simret = tandem_queue_network(arrivals, services, None, stime_limit)
 
     mean_service = service.mean()
     mean_arrival = arrival.mean()
@@ -152,14 +149,12 @@ def test_mm1_multihop_tandem_model_without_cross_traffic(
     expected_departure_mean = expected_arrival_mean
 
     for i in range(num_stations):
-        server = ret.data.servers[i]
-        queue = ret.data.queues[i]
-
-        est_busy_rate = server.busy_trace.timeavg()
-        est_system_size = ret.data.system_size_trace[i].timeavg()
-        est_arrival_mean = queue.arrival_intervals.statistic().mean()
-        est_service_mean = server.service_intervals.mean()
-        est_departure_mean = server.departure_intervals.statistic().mean()
+        node = simret.nodes[0]
+        est_busy_rate = node.busy.timeavg()
+        est_system_size = node.system_size.timeavg()
+        est_arrival_mean = node.arrivals.mean()
+        est_service_mean = node.service.mean()
+        est_departure_mean = node.departures.mean()
 
         assert_allclose(est_busy_rate, expected_busy_rate, rtol=0.25)
         assert_allclose(est_service_mean, expected_service_mean, rtol=0.25)
@@ -168,7 +163,7 @@ def test_mm1_multihop_tandem_model_without_cross_traffic(
         assert_allclose(est_departure_mean, expected_departure_mean, rtol=0.25)
 
     expected_delay = expected_system_size * mean_arrival * n
-    est_delay = ret.data.sources[0].delays.mean()
+    est_delay = simret.nodes[0].delay.mean()
     assert_allclose(est_delay, expected_delay, rtol=0.25)
 
 
@@ -178,18 +173,11 @@ def test_tandem_with_different_services():
     services = [Exponential(5), Exponential(8), Exponential(4)]
     arrivals = [Exponential(10), None, None]
 
-    ret = simulate(QueueingTandemNetwork, stime_limit=stime_limit, params={
-        'arrivals': arrivals,
-        'services': services,
-        'queue_capacity': None,
-        'num_stations': n,
-    })
+    simret = tandem_queue_network(arrivals, services, None, stime_limit)
 
     rhos = [services[i].mean() / arrivals[0].mean() for i in range(n)]
     sizes = [r / (1 - r) for r in rhos]
     delays = [sz * arrivals[0].mean() for sz in sizes]
     end_to_end_delay = sum(delays)
 
-    assert_allclose(
-        ret.data.sources[0].delays.mean(), end_to_end_delay, rtol=0.25
-    )
+    assert_allclose(simret.nodes[0].delay.mean(), end_to_end_delay, rtol=0.25)
