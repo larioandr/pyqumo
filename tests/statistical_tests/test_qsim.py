@@ -4,7 +4,7 @@ from pydesim import simulate
 
 from pyqumo.distributions import Exponential, PhaseType
 from pyqumo.qsim import QueueingSystem, QueueingTandemNetwork, \
-    tandem_queue_network
+    tandem_queue_network, tandem_queue_network_with_fixed_service
 
 
 @pytest.mark.parametrize('arrival,service,stime_limit', [
@@ -196,7 +196,7 @@ def test_mm1_multihop_tandem_model_without_cross_traffic(
 
 
 def test_tandem_with_different_services():
-    stime_limit = 10000
+    stime_limit = 20000
     n = 3
     services = [Exponential(5), Exponential(8), Exponential(4)]
     arrivals = [Exponential(10), None, None]
@@ -209,3 +209,28 @@ def test_tandem_with_different_services():
     end_to_end_delay = sum(delays)
 
     assert_allclose(simret.nodes[0].delay.mean(), end_to_end_delay, rtol=0.25)
+
+
+def test_tandem_with_fixed_service():
+    stime_limit = 20000
+    n = 3
+    service = Exponential(5)
+    arrivals = [Exponential(10), None, None]
+
+    simret = tandem_queue_network_with_fixed_service(
+        arrivals, service, None, stime_limit)
+    
+    print(simret)
+    service_means = [simret.nodes[i].service.mean() for i in range(n)]
+
+    n_services = len(simret.nodes[-1].service.as_tuple())
+    assert_allclose(
+        simret.nodes[0].service.as_tuple()[:n_services],
+        simret.nodes[1].service.as_tuple()[:n_services],
+    )
+    assert_allclose(
+        simret.nodes[0].service.as_tuple()[:n_services],
+        simret.nodes[2].service.as_tuple()[:n_services],
+    )
+
+    assert_allclose(service_means[0], service.mean(), rtol=0.1)

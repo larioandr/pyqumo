@@ -2,7 +2,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-.vscode/
 
 # C extensions
 *.so
@@ -106,3 +105,4 @@ venv.bak/
 
 # IDE settings
 .idea/
+.vscode/

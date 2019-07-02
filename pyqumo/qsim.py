@@ -8,6 +8,7 @@ class Packet:
         self.source = source
         self.created_at = created_at
         self.arrived_at = None
+        self.service_time = None
 
     def __str__(self):
         return f'Packet(src:{self.source.index}, t:{self.created_at})'
@@ -96,6 +97,65 @@ class QueueingTandemNetwork(Model):
         for i in range(n):
             self.queues.append(Queue(sim, queue_capacity, i))
             self.servers.append(Server(sim, services[i], i))
+            if i in active_sources:
+                self.sources.append(Source(sim, arrivals[i], i))
+            else:
+                self.sources.append(None)
+        self.sink = Sink(sim)
+        self.children['queue'] = self.queues
+        self.children['server'] = self.servers
+        self.children['sink'] = self.sink
+        self.children['sources'] = [src for src in self.sources if src]
+
+        # Connecting modules:
+        for i in range(n):
+            self.queues[i].connections['server'] = self.servers[i]
+            self.servers[i].connections['queue'] = self.queues[i]
+            if self.sources[i]:
+                self.sources[i].connections['queue'] = self.queues[i]
+            if i < n - 1:
+                self.servers[i].connections['next'] = self.queues[i + 1]
+            else:
+                self.servers[i].connections['next'] = self.sink
+
+        # Statistics:
+        self.system_size_trace = [Trace() for _ in range(n)]
+        for i in range(n):
+            self.system_size_trace[i].record(sim.stime, 0)
+        self.system_wait_intervals = [Statistic() for _ in range(n)]
+
+    def get_system_size(self, index):
+        return self.queues[index].size + (1 if self.servers[index].busy else 0)
+
+    def update_system_size(self, index):
+        self.system_size_trace[index].record(
+            self.sim.stime, self.get_system_size(index)
+        )
+    
+    def add_system_wait_interval(self, value, index):
+        self.system_wait_intervals[index].append(value)
+
+
+class QueueingTandemNetworkWithFixedService(Model):
+    """Queueing tandem network model with equal service times at servers.
+    """
+
+    def __init__(self, sim):
+        super().__init__(sim)
+
+        arrivals = sim.params.arrivals
+        service = sim.params.service
+        queue_capacity = sim.params.queue_capacity
+        n = sim.params.num_stations
+        active_sources = {i for i, ar in enumerate(arrivals) if ar is not None}
+
+        if n < 1:
+            raise ValueError('num_stations must be >= 1')
+
+        self.queues, self.sources, self.servers = [], [], []
+        for i in range(n):
+            self.queues.append(Queue(sim, queue_capacity, i))
+            self.servers.append(FixedServer(sim, service, i))
             if i in active_sources:
                 self.sources.append(Source(sim, arrivals[i], i))
             else:
@@ -313,14 +373,29 @@ class Server(Model):
             self.serve(queue.pop())
 
         self.parent.update_system_size(self.index)
+    
+    def _start_service(self):
+        delay = self.service_time()
+        self.sim.schedule(delay, self.handle_service_end)
+        return delay
 
     def serve(self, packet):
         assert not self.busy
         self.packet = packet
-        delay = self.service_time()
-        self.sim.schedule(delay, self.handle_service_end)
+        delay = self._start_service()
         self.service_intervals.append(delay)
         self.busy_trace.record(self.sim.stime, 1)
+
+
+class FixedServer(Server):
+    def __init__(self, sim, service_time, index=0):
+        super().__init__(sim, service_time, index)
+    
+    def _start_service(self):
+        if self.packet.service_time is None:
+            self.packet.service_time = self.service_time()
+        self.sim.schedule(self.packet.service_time, self.handle_service_end)
+        return self.packet.service_time
 
 
 class Sink(Model):
@@ -355,6 +430,47 @@ def tandem_queue_network(arrivals, services, queue_capacity, stime_limit):
         'queue_capacity': queue_capacity,
         'num_stations': num_stations,
     })
+
+    simret_class = namedtuple('SimRet', ['nodes'])
+    node_class = namedtuple('Node', [
+        'delay', 'queue_size', 'system_size', 'busy', 'arrivals', 'departures',
+        'service', 'num_served', 'num_arrived', 'num_dropped', 'drop_ratio',
+        'queue_wait', 'system_wait',
+    ])
+
+    active_nodes = {i for i in range(num_stations) if arrivals[i] is not None}
+
+    nodes = [
+        node_class(
+            delay=(sr.data.sources[i].delays if i in active_nodes else None),
+            queue_size=sr.data.queues[i].size_trace,
+            system_size=sr.data.system_size_trace[i],
+            busy=sr.data.servers[i].busy_trace,
+            arrivals=sr.data.queues[i].arrival_intervals.statistic(),
+            departures=sr.data.servers[i].departure_intervals.statistic(),
+            service=sr.data.servers[i].service_intervals,
+            num_served=sr.data.servers[i].num_served,
+            num_arrived=sr.data.queues[i].num_arrived,
+            num_dropped=sr.data.queues[i].num_dropped,
+            drop_ratio=sr.data.queues[i].drop_ratio,
+            queue_wait=sr.data.queues[i].wait_intervals,
+            system_wait=sr.data.system_wait_intervals[i],
+        ) for i in range(num_stations)
+    ]
+    return simret_class(nodes=nodes)
+
+
+def tandem_queue_network_with_fixed_service(arrivals, service, queue_capacity, 
+                                            stime_limit):
+    num_stations = len(arrivals)
+
+    sr = simulate(
+        QueueingTandemNetworkWithFixedService, stime_limit=stime_limit, params={
+            'arrivals': arrivals,
+            'service': service,
+            'queue_capacity': queue_capacity,
+            'num_stations': num_stations,
+        })
 
     simret_class = namedtuple('SimRet', ['nodes'])
     node_class = namedtuple('Node', [

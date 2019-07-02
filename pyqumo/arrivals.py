@@ -225,12 +225,6 @@ class MAP(ArrivalProcess):
             self.__state = np.random.choice(
                 range(self.order), p=(np.ones(self.order) / self.order)
             )
-        print(f'rates:\n{rates}')
-        print(f'means:\n{means}')
-        print(f'p0   :\n{p0}')
-        print(f'p1   :\n{p1}')
-        print(f'p    :\n{p}')
-        print(f'self.__state = {self.__state}')
 
         # Yielding random intervals
         arrival_interval = 0.0
@@ -242,7 +236,6 @@ class MAP(ArrivalProcess):
                (max_iters_per_sample is None or it < max_iters_per_sample)):
             arrival_interval += np.random.exponential(1 / rates[self.__state])
             next_state = np.random.choice(all_states, p=p[self.__state])
-            print(f'* next state = {next_state} (order:{self.order}, p={p[self.__state]})')
             if next_state >= self.order:
                 self.__state = next_state - self.order
                 num_generated += 1
