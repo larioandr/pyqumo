@@ -7,6 +7,7 @@ class Packet:
     def __init__(self, source, created_at):
         self.source = source
         self.created_at = created_at
+        self.arrived_at = None
 
     def __str__(self):
         return f'Packet(src:{self.source.index}, t:{self.created_at})'
@@ -44,6 +45,7 @@ class QueueingSystem(Model):
         # Statistics:
         self.system_size_trace = Trace()
         self.system_size_trace.record(self.sim.stime, 0)
+        self.system_wait_intervals = Statistic()
 
     @property
     def queue(self):
@@ -65,9 +67,13 @@ class QueueingSystem(Model):
     def system_size(self):
         return self.queue.size + (1 if self.server.busy else 0)
 
-    def update_system_size(self, index):
+    def update_system_size(self, index=0):
         assert index == 0
         self.system_size_trace.record(self.sim.stime, self.system_size)
+
+    def add_system_wait_interval(self, value, index=0):
+        assert index == 0
+        self.system_wait_intervals.append(value)
 
 
 class QueueingTandemNetwork(Model):
@@ -115,6 +121,7 @@ class QueueingTandemNetwork(Model):
         self.system_size_trace = [Trace() for _ in range(n)]
         for i in range(n):
             self.system_size_trace[i].record(sim.stime, 0)
+        self.system_wait_intervals = [Statistic() for _ in range(n)]
 
     def get_system_size(self, index):
         return self.queues[index].size + (1 if self.servers[index].busy else 0)
@@ -123,6 +130,9 @@ class QueueingTandemNetwork(Model):
         self.system_size_trace[index].record(
             self.sim.stime, self.get_system_size(index)
         )
+    
+    def add_system_wait_interval(self, value, index):
+        self.system_wait_intervals[index].append(value)
 
 
 class Queue(Model):
@@ -136,7 +146,10 @@ class Queue(Model):
     - size: get current queue size
 
     Statistics:
-    -  size_trace: Trace, holding the history of the queue size updates
+    - size_trace: Trace, holding the history of the queue size updates
+    - num_arrived: `int`
+    - num_dropped: `int`
+    - drop_ratio: `float`
     """
 
     def __init__(self, sim, capacity, index=0):
@@ -150,6 +163,8 @@ class Queue(Model):
         self.num_dropped = 0
         self.arrival_intervals = Intervals()
         self.arrival_intervals.record(sim.stime)
+        self.num_arrived = 0
+        self.wait_intervals = Statistic()
 
     @property
     def capacity(self):
@@ -158,16 +173,26 @@ class Queue(Model):
     @property
     def size(self):
         return len(self.packets)
+    
+    @property
+    def drop_ratio(self):
+        if self.num_arrived == 0:
+            return 0
+        return self.num_dropped / self.num_arrived
 
     def handle_message(self, message, connection=None, sender=None):
         self.push(message)
 
     def push(self, packet):
         self.arrival_intervals.record(self.sim.stime)
+        self.num_arrived += 1
         server = self.connections['server'].module
+
+        packet.arrived_at = self.sim.stime
 
         if self.size == 0 and not server.busy:
             server.serve(packet)
+            self.wait_intervals.append(self.sim.stime - packet.arrived_at)
 
         elif self.capacity is None or self.size < self.capacity:
             self.packets.append(packet)
@@ -179,9 +204,10 @@ class Queue(Model):
         self.parent.update_system_size(self.index)
 
     def pop(self):
-        ret = self.packets.popleft()
+        packet = self.packets.popleft()
         self.size_trace.record(self.sim.stime, self.size)
-        return ret
+        self.wait_intervals.append(self.sim.stime - packet.arrived_at)
+        return packet
 
     def __str__(self):
         return f'Queue({self.size})'
@@ -239,6 +265,7 @@ class Server(Model):
     Statistics:
     - delays: `Statistic`, stores a set of service intervals
     - busy_trace: `Trace`, stores a vector of server busy status
+    - num_served: `int`
 
     Parent: `QueueingSystem`
     """
@@ -255,6 +282,7 @@ class Server(Model):
         self.busy_trace.record(self.sim.stime, 0)
         self.departure_intervals = Intervals()
         self.departure_intervals.record(sim.stime)
+        self.num_served = 0
 
     @property
     def busy(self):
@@ -266,10 +294,18 @@ class Server(Model):
 
     def handle_service_end(self):
         assert self.busy
+        stime = self.sim.stime
+
         self.connections['next'].send(self.packet)
+        self.parent.add_system_wait_interval(
+            stime - self.packet.arrived_at, self.index
+        )
+
         self.packet = None
-        self.busy_trace.record(self.sim.stime, 0)
-        self.departure_intervals.record(self.sim.stime)
+
+        self.busy_trace.record(stime, 0)
+        self.departure_intervals.record(stime)
+        self.num_served += 1
 
         # Requesting next packet from the queue:
         queue = self.connections['queue'].module
@@ -323,7 +359,8 @@ def tandem_queue_network(arrivals, services, queue_capacity, stime_limit):
     simret_class = namedtuple('SimRet', ['nodes'])
     node_class = namedtuple('Node', [
         'delay', 'queue_size', 'system_size', 'busy', 'arrivals', 'departures',
-        'service',
+        'service', 'num_served', 'num_arrived', 'num_dropped', 'drop_ratio',
+        'queue_wait', 'system_wait',
     ])
 
     active_nodes = {i for i in range(num_stations) if arrivals[i] is not None}
@@ -337,6 +374,12 @@ def tandem_queue_network(arrivals, services, queue_capacity, stime_limit):
             arrivals=sr.data.queues[i].arrival_intervals.statistic(),
             departures=sr.data.servers[i].departure_intervals.statistic(),
             service=sr.data.servers[i].service_intervals,
+            num_served=sr.data.servers[i].num_served,
+            num_arrived=sr.data.queues[i].num_arrived,
+            num_dropped=sr.data.queues[i].num_dropped,
+            drop_ratio=sr.data.queues[i].drop_ratio,
+            queue_wait=sr.data.queues[i].wait_intervals,
+            system_wait=sr.data.system_wait_intervals[i],
         ) for i in range(num_stations)
     ]
     return simret_class(nodes=nodes)

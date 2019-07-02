@@ -89,6 +89,10 @@ class MAP(ArrivalProcess):
         self._d0 = d0
         self._d1 = d1
         self.__cache__ = {}
+        self.__state = None  # used in __call__()
+    
+    def copy(self):
+        return MAP(self.D0, self.D1, check=False)
 
     # noinspection PyPep8Naming
     @property
@@ -157,7 +161,7 @@ class MAP(ArrivalProcess):
 
     @cached_method('std')
     def std(self):
-        return self.var() ** 2
+        return self.var() ** 0.5
 
     @cached_method('cv')
     def cv(self):
@@ -196,43 +200,67 @@ class MAP(ArrivalProcess):
     def embedded_dtmc(self):
         return chains.DTMC(self.d0n(-1).dot(self.D1), check=False)
 
-    def generate(self, size, init=None):
+    def generate(self, size, max_iters_per_sample=None):
         # Building P - a transition probabilities matrix of size Nx(2N), where:
         # - P(i, j), j < N, is a probability to move i -> j without arrival;
         # - P(i, j), N <= j < 2N is a probability to move i -> (j - N) with
         #   arrival
-        rates = -self.D0.diagonal()
-        means = np.diag(np.power(rates, -1))
-        p0 = means.dot(self.D0 + np.diag(rates))
-        p1 = means.dot(self.D1)
-        p = np.hstack([p0, p1])
+        rates = self.__cache__.get('$generate__rates', -self.D0.diagonal())
+        means = self.__cache__.get(
+            '$generate__means', np.diag(np.power(rates, -1)))
+        p0 = self.__cache__.get(
+            '$generate__p0', means.dot(self.D0 + np.diag(rates)))
+        p1 = self.__cache__.get('$generate__p1', means.dot(self.D1))
+        p = self.__cache__.get('$generate__p', np.hstack([p0, p1]))
 
-        # Looking for the first state.
-        # - if init is None or a vector, it is treated as initial PMF
-        # - if init is an `int`, it is treated as the first state
-        state = None
-        init_pmf = None
-        if init is None:
-            init_pmf = np.asarray([1. / self.order] * self.order)
-        elif init is int:
-            state = init
-        elif order_of(init) == self.order:
-            init_pmf = init
-        else:
-            raise ValueError("unexpected init argument = '{}'".format(init))
-        if state is None:
-            state = np.random.choice(range(self.order), p=init_pmf)
+        self.__cache__.update({
+            '$generate__rates': rates,
+            '$generate__means': means,
+            '$generate__p0': p0,
+            '$generate__p1': p1,
+            '$generate__p': p,
+        })
+
+        if self.__state is None:
+            self.__state = np.random.choice(
+                range(self.order), p=(np.ones(self.order) / self.order)
+            )
+        print(f'rates:\n{rates}')
+        print(f'means:\n{means}')
+        print(f'p0   :\n{p0}')
+        print(f'p1   :\n{p1}')
+        print(f'p    :\n{p}')
+        print(f'self.__state = {self.__state}')
 
         # Yielding random intervals
         arrival_interval = 0.0
-        for i in range(size):
-            arrival_interval += np.random.exponential(1 / rates[state])
-            next_state = np.random.choice(range(2 * self.order), p=p[state])
+        num_generated = 0
+        all_states = list(range(2 * self.order))
+
+        it = 0
+        while (num_generated < size and 
+               (max_iters_per_sample is None or it < max_iters_per_sample)):
+            arrival_interval += np.random.exponential(1 / rates[self.__state])
+            next_state = np.random.choice(all_states, p=p[self.__state])
+            print(f'* next state = {next_state} (order:{self.order}, p={p[self.__state]})')
             if next_state >= self.order:
-                next_state -= self.order
+                self.__state = next_state - self.order
+                num_generated += 1
                 yield arrival_interval
+                it = 0
                 arrival_interval = 0.0
-            state = next_state
+            else:
+                self.__state = next_state
+                it += 1
+        if num_generated < size:
+            raise RuntimeError(
+                f'{num_generated}/{size} generated in {it} iterations')
+    
+    def __call__(self):
+        return next(self.generate(1))
+    
+    def reset_generate_state(self):
+        self.__state = None
 
     def compose(self, other):
         # TODO:  write unit tests

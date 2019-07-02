@@ -78,6 +78,58 @@ class Constant(Distribution):
         return str(self)
 
 
+class Uniform(Distribution):
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+    
+    @property
+    def min(self):
+        return self.a if self.a < self.b else self.b
+
+    @property
+    def max(self):
+        return self.b if self.a < self.b else self.a
+    
+    def mean(self):
+        return 0.5 * (self.a + self.b)
+    
+    def std(self):
+        return (self.max - self.min) / (12 ** 0.5)
+    
+    def var(self):
+        return (self.max - self.min) ** 2 / 12
+    
+    def moment(self, k):
+        if k == 1:
+            return self.mean()
+        elif k == 2:
+            return self.var() + self.mean() ** 2
+        else:
+            if k <= 0 or np.abs(k - np.round(k)) > 0:
+                raise ValueError('positive integer expected')
+            raise ValueError('two moments supported')
+    
+    def generate(self, num):
+        return np.random.uniform(self.min, self.max, size=num)
+    
+    def pdf(self, x):
+        return 1 / (self.max - self.min) if self.min <= x <= self.max else 0
+    
+    def cdf(self, x):
+        return 0 if x < self.min else (
+            1 / (self.max - self.min) if x < self.max else 1
+        )
+    
+    def __call__(self):
+        return self.generate(None)
+    
+    def sample(self, shape):
+        return np.random.uniform(self.min, self.max, size=shpe)
+    
+    def __str__(self):
+        return f'U({self.min},{self.max})'
+
+
 class Normal(Distribution):
     def __init__(self, mean, std):
         self.__mean, self.__std = mean, std

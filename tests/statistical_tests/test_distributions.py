@@ -3,7 +3,7 @@ import pytest
 from numpy.testing import assert_almost_equal, assert_allclose
 
 from pyqumo.distributions import Constant, Exponential, SemiMarkovAbsorb, \
-    LinComb, VarChoice, Normal
+    LinComb, VarChoice, Normal, Uniform
 
 
 @pytest.mark.parametrize('value', [34, 42])
@@ -202,3 +202,39 @@ def test_normal_distribution(mean, std):
     assert_allclose(samples.std(), std, rtol=0.2)
 
     assert str(dist) == f'N({mean},{std})'
+
+
+@pytest.mark.parametrize('a,b', [(0, 10), (23, 24), (30, 20)])
+def test_uniform_distribution(a, b):
+    dist = Uniform(a, b)
+
+    m1 = 0.5 * (a + b)
+    var = np.abs(b - a) ** 2 / 12
+    std = var ** 0.5
+    m2 = m1 ** 2 + var
+
+    assert_allclose(dist.mean(), m1)
+    assert_allclose(dist.var(), var)
+    assert_allclose(dist.std(), std)
+    assert_allclose(dist.moment(1), m1)
+    assert_allclose(dist.moment(2), m2)
+
+    with pytest.raises(ValueError) as excinfo:
+        dist.moment(3)
+    assert 'two moments supported' in str(excinfo.value).lower()
+    
+    # To be consistent, validate that moment argument is a natural number:
+    for k in (0, -1, 2.3):
+        with pytest.raises(ValueError) as excinfo:
+            dist.moment(k)
+        assert 'positive integer expected' in str(excinfo.value).lower()
+    
+    samples = dist.generate(2000)
+    assert_allclose(samples.mean(), m1, rtol=0.2)
+    assert_allclose(samples.std(), std, rtol=0.2)
+
+    samples = np.asarray([dist() for _ in range(1000)])
+    assert_allclose(samples.mean(), m1, rtol=0.2)
+    assert_allclose(samples.std(), std, rtol=0.2)
+
+    assert str(dist) == f'U({min(a, b)},{max(a, b)})'

@@ -4,6 +4,7 @@ from numpy.testing import assert_allclose, assert_almost_equal
 
 from pyqumo import arrivals as ar
 from pyqumo.distributions import Erlang
+from pyqumo import stats
 
 
 class TestPoisson(ut.TestCase):
@@ -122,9 +123,48 @@ class TestMAP(ut.TestCase):
 
     # noinspection PyTypeChecker
     def test_generate(self):
-        e = Erlang(5, 2.0)
-        m = ar.MAP.erlang(e.shape, e.rate)
-        samples = list(m.generate(20000))
+        D0 = [
+            [-9.0,  0.0,  0.0,   0.0],
+            [0.0,  -9.0,  9.0,   0.0],
+            [0.0,   0.0, -0.1,   0.0],
+            [0.1,   0.0,  0.0,  -0.1],
+        ]
+        D1 = [
+            [8.0, 1.0, 0.00, 0.00],
+            [0.0, 0.0, 0.00, 0.00],
+            [0.0, 0.0, 0.09, 0.01],
+            [0.0, 0.0, 0.00, 0.00],
+        ]
+        m = ar.MAP(D0, D1, check=True)
+        NUM_SAMPLES = 25000
+        samples = list(m.generate(NUM_SAMPLES))
 
-        self.assertAlmostEqual(np.mean(samples), e.mean(), places=1)
-        self.assertAlmostEqual(np.std(samples), e.std(), places=1)
+        self.assertEqual(len(samples), NUM_SAMPLES)
+        assert_allclose(np.mean(samples), m.mean(), rtol=0.1)
+        assert_allclose(np.std(samples), m.std(), rtol=0.1)
+        assert_allclose(np.var(samples), m.var(), rtol=0.1)
+        assert_allclose(stats.lag(samples, 2), [m.lag(1), m.lag(2)], rtol=0.1)
+
+    # noinspection PyTypeChecker
+    def test_call(self):
+        D0 = [
+            [-99.0,  0.0,   0.0,   0.0],
+            [0.0,  -99.0,  99.0,   0.0],
+            [0.0,    0.0, -0.01,   0.0],
+            [0.01,   0.0,   0.0, -0.01],
+        ]
+        D1 = [
+            [98.0, 1.00, 0.000, 0.000],
+            [0.00, 0.00, 0.000, 0.000],
+            [0.00, 0.00, 0.009, 0.001],
+            [0.00, 0.00, 0.000, 0.000],
+        ]
+        m = ar.MAP(D0, D1, check=True)
+        NUM_SAMPLES = 25000
+        samples = [m() for _ in range(NUM_SAMPLES)]
+
+        self.assertEqual(len(samples), NUM_SAMPLES)
+        assert_allclose(np.mean(samples), m.mean(), rtol=0.2)
+        assert_allclose(np.std(samples), m.std(), rtol=0.2)
+        assert_allclose(np.var(samples), m.var(), rtol=0.2)
+        assert_allclose(stats.lag(samples, 2), [m.lag(1), m.lag(2)], rtol=0.2)

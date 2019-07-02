@@ -8,9 +8,9 @@ from pyqumo.qsim import QueueingSystem, QueueingTandemNetwork, \
 
 
 @pytest.mark.parametrize('arrival,service,stime_limit', [
-    (Exponential(5), Exponential(1), 8000),
-    (Exponential(3), Exponential(2), 8000),
-    (PhaseType.exponential(10.0), PhaseType.exponential(48.0), 50),
+    (Exponential(5), Exponential(1), 12000),
+    (Exponential(3), Exponential(2), 12000),
+    (PhaseType.exponential(10.0), PhaseType.exponential(48.0), 4000),
 ])
 def test_mm1_model(arrival, service, stime_limit):
     ret = simulate(QueueingSystem, stime_limit=stime_limit, params={
@@ -25,23 +25,33 @@ def test_mm1_model(arrival, service, stime_limit):
     est_departure_mean = ret.data.sink.arrival_intervals.statistic().mean()
     est_service_mean = ret.data.server.service_intervals.mean()
     est_delay = ret.data.source.delays.mean()
+    est_sys_wait = ret.data.system_wait_intervals.mean()
+    est_queue_wait = ret.data.queue.wait_intervals.mean()
 
     mean_service = service.mean()
     mean_arrival = arrival.mean()
     rho = mean_service / mean_arrival
+    expected_delay = mean_arrival * rho / (1 - rho)
 
     assert_allclose(est_service_mean, mean_service, rtol=0.25)
     assert_allclose(busy_rate, rho, rtol=0.25)
     assert_allclose(system_size, rho / (1 - rho), rtol=0.25)
     assert_allclose(est_arrival_mean, mean_arrival, rtol=0.25)
     assert_allclose(est_departure_mean, mean_arrival, rtol=0.25)
-    assert_allclose(est_delay, mean_arrival * rho / (1 - rho), rtol=0.25)
+    assert_allclose(est_delay, expected_delay, rtol=0.25)
+    assert_allclose(est_sys_wait, expected_delay, rtol=0.25)
+    assert_allclose(est_queue_wait, expected_delay - mean_service, 0.25)
+    
+    assert ret.data.queue.drop_ratio == 0
+    assert ret.data.queue.num_dropped == 0
+    assert ret.data.queue.num_arrived > 0
+    assert ret.data.server.num_served > 0
 
 
 @pytest.mark.parametrize('arrival,service,stime_limit', [
-    (Exponential(5), Exponential(1), 5000),
-    (Exponential(3), Exponential(2), 5000),
-    (PhaseType.exponential(10.0), PhaseType.exponential(48.0), 50),
+    (Exponential(5), Exponential(1), 15000),
+    (Exponential(3), Exponential(2), 15000),
+    (PhaseType.exponential(10.0), PhaseType.exponential(48.0), 4000),
 ])
 def test_mm1_single_hop_tandem_model(arrival, service, stime_limit):
     ret = simulate(QueueingTandemNetwork, stime_limit=stime_limit, params={
@@ -57,23 +67,33 @@ def test_mm1_single_hop_tandem_model(arrival, service, stime_limit):
     est_service_mean = ret.data.servers[0].service_intervals.mean()
     est_delay = ret.data.sources[0].delays.mean()
     est_departure_mean = ret.data.sink.arrival_intervals.statistic().mean()
+    est_sys_wait = ret.data.system_wait_intervals[0].mean()
+    est_queue_wait = ret.data.queues[0].wait_intervals.mean()
 
     mean_service = service.mean()
     mean_arrival = arrival.mean()
     rho = mean_service / mean_arrival
+    expected_delay = mean_arrival * rho / (1 - rho)
 
     assert_allclose(est_service_mean, mean_service, rtol=0.25)
     assert_allclose(busy_rate, rho, rtol=0.25)
     assert_allclose(system_size, rho / (1 - rho), atol=0.05, rtol=0.25)
     assert_allclose(est_arrival_mean, mean_arrival, rtol=0.25)
     assert_allclose(est_departure_mean, mean_arrival, rtol=0.25)
-    assert_allclose(est_delay, mean_arrival * rho / (1 - rho), rtol=0.25)
+    assert_allclose(est_delay, expected_delay, rtol=0.25)
+    assert_allclose(est_sys_wait, expected_delay, rtol=0.25)
+    assert_allclose(est_queue_wait, expected_delay - mean_service, 0.25)
+
+    assert ret.data.queues[0].drop_ratio == 0
+    assert ret.data.queues[0].num_dropped == 0
+    assert ret.data.queues[0].num_arrived > 0
+    assert ret.data.servers[0].num_served > 0
 
 
 @pytest.mark.parametrize('arrival,service,stime_limit,num_stations', [
-    (Exponential(5), Exponential(1), 12000, 3),
-    (Exponential(30), Exponential(2), 12000, 10),
-    (PhaseType.exponential(10.0), PhaseType.exponential(48.0), 200, 4),
+    (Exponential(5), Exponential(1), 48000, 3),
+    (Exponential(30), Exponential(2), 48000, 10),
+    (PhaseType.exponential(10.0), PhaseType.exponential(48.0), 4000, 4),
 ])
 def test_mm1_multihop_tandem_model_with_cross_traffic(
         arrival, service, stime_limit, num_stations):
@@ -100,6 +120,8 @@ def test_mm1_multihop_tandem_model_with_cross_traffic(
         est_arrival_mean = queue.arrival_intervals.statistic().mean()
         est_service_mean = server.service_intervals.mean()
         est_departure_mean = server.departure_intervals.statistic().mean()
+        est_system_wait = ret.data.system_wait_intervals[i].mean()
+        est_queue_wait = queue.wait_intervals.mean()
 
         expected_busy_rate = rho * (i + 1)
         expected_service_mean = mean_service
@@ -114,6 +136,12 @@ def test_mm1_multihop_tandem_model_with_cross_traffic(
         assert_allclose(est_system_size, expected_system_size, rtol=0.25)
         assert_allclose(est_arrival_mean, expected_arrival_mean, rtol=0.25)
         assert_allclose(est_departure_mean, expected_departure_mean, rtol=0.25)
+        assert_allclose(est_system_wait, expected_node_delays[-1], rtol=0.25)
+        assert_allclose(
+            est_queue_wait, 
+            expected_node_delays[-1] - expected_service_mean, 
+            rtol=0.25
+        )
 
     est_delays = [ret.data.sources[i].delays.mean() for i in range(n)]
     expected_delays = [0.0] * n
@@ -126,9 +154,9 @@ def test_mm1_multihop_tandem_model_with_cross_traffic(
 
 
 @pytest.mark.parametrize('arrival,service,stime_limit,num_stations', [
-    (Exponential(5), Exponential(1), 12000, 3),
-    (Exponential(30), Exponential(2), 12000, 10),
-    (PhaseType.exponential(10.0), PhaseType.exponential(48.0), 200, 4),
+    (Exponential(5), Exponential(1), 24000, 3),
+    (Exponential(30), Exponential(2), 24000, 10),
+    (PhaseType.exponential(10.0), PhaseType.exponential(48.0), 2000, 4),
 ])
 def test_mm1_multihop_tandem_model_without_cross_traffic(
         arrival, service, stime_limit, num_stations):
