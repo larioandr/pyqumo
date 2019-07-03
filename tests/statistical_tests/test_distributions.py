@@ -3,7 +3,7 @@ import pytest
 from numpy.testing import assert_almost_equal, assert_allclose
 
 from pyqumo.distributions import Constant, Exponential, SemiMarkovAbsorb, \
-    LinComb, VarChoice, Normal, Uniform
+    LinComb, VarChoice, Normal, Uniform, LinearTransform
 
 
 @pytest.mark.parametrize('value', [34, 42])
@@ -78,6 +78,15 @@ def test_exponential_distribution(mean):
 
     # Finally, we make sure that str is implemented and contains value:
     assert str(mean) in str(dist)
+
+    r = 1 / mean
+    assert_allclose(dist.cdf(mean * np.log(2)), 0.5)
+    assert_allclose(dist.cdf(0), 0)
+    assert_allclose(dist.cdf(1), 1 - np.exp(-r))
+    
+    assert_allclose(dist.pdf(mean * np.log(2)), r/2)
+    assert_allclose(dist.pdf(0), r)
+    assert_allclose(dist.pdf(1), r * np.exp(-r))
 
 
 def test_semi_markov_absorb():
@@ -238,3 +247,47 @@ def test_uniform_distribution(a, b):
     assert_allclose(samples.std(), std, rtol=0.2)
 
     assert str(dist) == f'U({min(a, b)},{max(a, b)})'
+
+
+@pytest.mark.parametrize('xi,koef,offset', [
+    (Exponential(1), 1.0, 0.0),
+    (Exponential(2), 4.0, 3.0),
+])
+def test_linear_transform(xi, koef, offset):
+    dist = LinearTransform(xi, koef, offset)
+
+    mean, std = xi.mean() * koef + offset, xi.std() * koef
+    moments = [mean, mean ** 2 + std ** 2]
+    
+    assert_allclose(dist.mean(), mean)
+    assert_allclose(dist.std(), std)
+    assert_allclose(dist.var(), std ** 2)
+    assert_allclose([dist.moment(1), dist.moment(2)], moments)
+
+    with pytest.raises(ValueError) as excinfo:
+        dist.moment(3)
+    assert 'two moments supported' in str(excinfo.value).lower()
+    
+    # To be consistent, validate that moment argument is a natural number:
+    for k in (0, -1, 2.3):
+        with pytest.raises(ValueError) as excinfo:
+            dist.moment(k)
+        assert 'positive integer expected' in str(excinfo.value).lower()
+
+    assert_allclose(dist.cdf(offset), xi.cdf(0))
+    assert_allclose(dist.cdf(offset + koef), xi.cdf(1))
+
+    print(f'dist.pdf(b) = {dist.pdf(offset)}')
+    print(f'xi.pdf(0) = {xi.pdf(0)}, k = {koef}')
+
+    assert_allclose(dist.pdf(offset), xi.pdf(0) / koef)
+    assert_allclose(dist.pdf(offset + koef), xi.pdf(1) / koef)
+
+    samples = np.asarray(list(dist.generate(50000)))
+    assert_allclose(samples.mean(), dist.mean(), rtol=0.1)
+    assert_allclose(samples.std(), dist.std(), rtol=0.1)
+
+    samples = np.asarray([dist() for _ in range(50000)])
+    assert_allclose(samples.mean(), dist.mean(), rtol=0.1)
+    assert_allclose(samples.std(), dist.std(), rtol=0.1)
+

@@ -188,6 +188,10 @@ class Exponential:
 
     def mean(self):
         return self.__mean
+    
+    @property
+    def rate(self):
+        return 1 / self.__mean
 
     def std(self):
         return self.__mean
@@ -209,6 +213,13 @@ class Exponential:
 
     def __repr__(self):
         return str(self)
+
+    def pdf(self, x):
+        return Exp.f(x, self.rate)
+
+    def cdf(self, x):
+        return Exp.F(x, self.rate)
+
 
 
 class Discrete:
@@ -864,3 +875,59 @@ class PhaseType(Distribution):
 
     def __str__(self):
         return "PH(S={}, pmf0={})".format(self.S.tolist(), self.pmf0.tolist())
+
+
+class LinearTransform(Distribution):
+    def __init__(self, xi, k, b):
+        super().__init__()
+        self.__xi = xi
+        self.__k = k
+        self.__b = b
+    
+    @property
+    def xi(self):
+        return self.__xi
+    
+    @property
+    def k(self):
+        return self.__k
+    
+    @property
+    def b(self):
+        return self.__b
+
+    def mean(self):
+        return self.k * self.xi.mean() + self.b
+
+    def var(self):
+        return (self.k ** 2) * self.xi.var()
+
+    def std(self):
+        return self.k * self.xi.std()
+
+    def moment(self, n: int):
+        if n <= 0 or np.abs(n - np.round(n)) > 0:
+            raise ValueError('positive integer expected')
+        if n == 1:
+            return self.mean()
+        elif n == 2:
+            return self.mean() ** 2 + self.var()
+        else:
+            raise ValueError('two moments supported')
+
+    def generate(self, num):
+        for i in range(num):
+            yield self.xi() * self.k + self.b
+
+    def pdf(self, x):
+        return self.xi.pdf((x - self.b) / self.k) / self.k
+
+    def cdf(self, x):
+        return self.xi.cdf((x - self.b) / self.k)
+
+    def __call__(self) -> float:
+        return self.xi() * self.k + self.b
+
+    def sample(self, shape):
+        size = np.prod(shape)
+        return np.asarray(list(self.generate(size))).reshape(shape)
