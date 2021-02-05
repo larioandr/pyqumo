@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import numpy as np
 
 from pyqumo import chains
@@ -5,61 +7,84 @@ from pyqumo.matrix import is_infinitesimal, cached_method, cbdiag, order_of
 from pyqumo.distributions import Exp
 
 
-class ArrivalProcess(object):
-    def __init__(self): super().__init__()
-
-    def mean(self): raise NotImplementedError
-
-    def var(self): raise NotImplementedError
-
-    def std(self): raise NotImplementedError
-
-    def cv(self): raise NotImplementedError
-
-    def lag(self, k): raise NotImplementedError
-
-    def moment(self, k): raise NotImplementedError
-
-    def generate(self, size): raise NotImplementedError
-
-
-class PoissonProcess(ArrivalProcess):
-    def __init__(self, rate):
-        super().__init__()
-        if rate <= 0.0:
-            raise ValueError("positive rate expected, '{}' found".format(rate))
-        self._rate = rate
-        self._dist = Exp(rate)
-        self.__cache__ = {}
+class ArrivalProcess:
+    def mean(self):
+        raise NotImplementedError
 
     @property
+    @lru_cache
     def rate(self):
-        return self._rate
+        return 1.0 / self.mean()
+
+    def var(self):
+        raise NotImplementedError
+
+    def std(self):
+        raise NotImplementedError
+
+    def cv(self):
+        raise NotImplementedError
+
+    def lag(self, k):
+        raise NotImplementedError
+
+    def moment(self, k):
+        raise NotImplementedError
+
+    def generate(self, size):
+        raise NotImplementedError
+
+    def next(self):
+        return self.generate(1)
+
+
+class GIProcess(ArrivalProcess):
+    def __init__(self, dist):
+        if dist is None:
+            raise ValueError('distribution required')
+        self._dist = dist
 
     @property
-    def intervals_distribution(self):
+    def dist(self):
         return self._dist
 
-    def mean(self): return self._dist.mean()
+    def mean(self):
+        return self._dist.mean()
 
-    def var(self): return self._dist.var()
+    def var(self):
+        return self._dist.var()
 
-    def std(self): return self._dist.std()
+    def std(self):
+        return self._dist.std()
 
-    def cv(self): return self._dist.std() / self._dist.mean()
+    def cv(self):
+        return self._dist.std() / self._dist.mean()
 
     def lag(self, k):
         return 0.0
 
-    def moment(self, k): return self._dist.moment(k)
+    def moment(self, k):
+        return self._dist.moment(k)
 
     def generate(self, size):
         return self._dist.generate(size)
 
 
+class PoissonProcess(GIProcess):
+    def __init__(self, rate):
+        if rate <= 0.0:
+            raise ValueError("positive rate expected, '{}' found".format(rate))
+        super().__init__(Exp(rate))
+
+
 class MAP(ArrivalProcess):
     @staticmethod
     def erlang(shape, rate):
+        """MAP representation of Erlang process with the given shape and rate.
+
+        :param shape number of phases
+        :param rate rate at each phase
+        """
         d0 = cbdiag(shape, [(0, [[-rate]]), (1, [[rate]])])
         d1 = np.zeros((shape, shape))
         d1[shape-1, 0] = rate
@@ -67,6 +92,10 @@ class MAP(ArrivalProcess):
 
     @staticmethod
     def exponential(rate):
+        """MAP representation of a Poisson process with the given rate.
+
+        :param rate exponential distribution rate ($1/\mu$)
+        """
         if rate <= 0:
             raise ValueError("positive rate expected, '{}' found".format(rate))
         d0 = [[-rate]]
@@ -74,14 +103,42 @@ class MAP(ArrivalProcess):
         return MAP(d0, d1)
 
     def __init__(self, d0, d1, check=True, rtol=1e-5, atol=1e-6):
+        """Create MAP process with the given D0 and D1 matrices.
+
+        If `check == True` is set (this is default), then we validate matrices
+        D0 and D1. These matrices must comply three requirements:
+
+        1) Sum `D0 + D1` must be an infinitesimal matrix
+        2) All elements of D1 must be non-negative
+        3) All elements of D0 except the main diagonal must be non-negative
+
+        To avoid problems with "1e-9 is not zero", constructor accepts
+        parameters `rtol` (relative tolerance) and `atol` (absolute tolerance):
+
+        - any value `x: |x| <= atol` is treated as `0`
+        - any value `x: x >= -atol` is treated as non-negative
+        - any value `x: x <= atol` is treated as non-positive
+
+        Sometimes it is useful to avoid matrices validation (e.g., when MAP
+        matrices are obtained as a result of another computation). To disable
+        validation, set `check = False`.
+
+        :param d0 matrix of "invisible" transitions
+        :param d1 matrix of "visible" transitions
+        :param check set to `False` to skip matrices D0 and D1 validation
+        :param rtol relative tolerance used when validating D0 and D1
+        :param atol absolute tolerance used when validating D0 and D1
+        """
         super().__init__()
         d0 = np.asarray(d0)
         d1 = np.asarray(d1)
         if check:
             if not is_infinitesimal(d0 + d1, rtol=rtol, atol=atol):
                 raise ValueError("D0 + D1 must be infinitesimal")
+
             if not np.all(d1 >= -atol):
                 raise ValueError("all D1 elements must be non-negative")
+
             if not (np.all(d0 - np.diag(d0.diagonal()) >= -atol)):
                 raise ValueError("all non-diagonal D0 elements must be "
                                  "non-negative")
@@ -92,20 +149,25 @@ class MAP(ArrivalProcess):
         self.__state = None  # used in __call__()
     
     def copy(self):
+        """Build a new MAP with the same matrices D0 and D1 without validation.
+        """
         return MAP(self.D0, self.D1, check=False)
 
     # noinspection PyPep8Naming
     @property
     def D0(self):
+        """Get matrix D0."""
         return self._d0
 
     # noinspection PyPep8Naming
     @property
     def D1(self):
+        """Get matrix D1."""
         return self._d1
 
     # noinspection PyPep8Naming
     def D(self, n):
+        """Get matrix Dn for n = 0 or n = 1."""
         if n == 0:
             return self.D0
         elif n == 1:
@@ -114,12 +176,12 @@ class MAP(ArrivalProcess):
             raise ValueError("illegal n={} found".format(n))
 
     @property
-    @cached_method('generator')
+    @lru_cache
     def generator(self):
         return self.D0 + self.D1
 
     @property
-    @cached_method('order')
+    @lru_cache
     def order(self):
         return order_of(self.D0)
 
